@@ -155,17 +155,47 @@ class Block(Matrix):
                 self.dct_coeff[i][j] = math.cos((2 * i + 1) * j * math.pi / 16)
 
     def get_dct(self):
-        # NumPy fast path
-        arr = np.array(self.matrix, dtype=np.float64).T - 128.0
-        result = _DCT_MATRIX @ arr @ _DCT_MATRIX.T
-        self.blk.matrix = result.T.tolist()
+        # NumPy fast path – exakt gleiches Ergebnis wie Original-Loop
+        arr = np.array(self.matrix, dtype=np.float64) - 128.0
+        blk = np.zeros((8, 8), dtype=np.float64)
+
+        # Row pass
+        for y in range(8):
+            t = arr[:, y]
+            blk[0, y] = _SQ2 * np.sum(t)
+            for x in range(1, 8):
+                blk[x, y] = np.sum(t * _DCT_COEFF[:, x]) / 2.0
+
+        # Column pass
+        result = np.zeros((8, 8), dtype=np.float64)
+        for x in range(8):
+            t = blk[x, :]
+            result[x, 0] = _SQ2 * np.sum(t)
+            for y in range(1, 8):
+                result[x, y] = np.sum(t * _DCT_COEFF[:, y]) / 2.0
+
+        self.blk.matrix = result.tolist()
         return self.blk
 
     def get_idct(self):
-        # NumPy fast path
-        arr = np.array(self.matrix, dtype=np.float64).T
-        result = _IDCT_MATRIX @ arr @ _IDCT_MATRIX.T + 128.0
-        self.blk.matrix = result.T.tolist()
+        # NumPy fast path – exakt gleiches Ergebnis wie Original-Loop
+        arr = np.array(self.matrix, dtype=np.float64)
+        blk = np.zeros((8, 8), dtype=np.float64)
+
+        # Row pass
+        for y in range(8):
+            t = arr[:, y]
+            for x in range(8):
+                blk[x, y] = (t[0] * _DCT_COEFF[x, 0] * _SQ2_INV + np.sum(t[1:] * _DCT_COEFF[x, 1:])) / 2.0
+
+        # Column pass
+        result = np.zeros((8, 8), dtype=np.float64)
+        for x in range(8):
+            t = blk[x, :]
+            for y in range(8):
+                result[x, y] = (t[0] * _DCT_COEFF[y, 0] * _SQ2_INV + np.sum(t[1:] * _DCT_COEFF[y, 1:])) / 2.0 + 128.0
+
+        self.blk.matrix = result.tolist()
         return self.blk.to_int_block()
 
     def get_zig_zag_scan(self):
