@@ -377,6 +377,113 @@ def run_app():
                         symbols_text.append(f"({sym.zero_count} Nullen, Groesse {sym.size_non_zero})")
             st.code("\n".join(symbols_text), language="text")
 
+        # NEU: RLE Visualisierung
+        st.subheader("RLE-Kodierung Visualisierung")
+        
+        # 1. Zig-Zag Vektor als farbige Tabelle
+        st.write("**Zick-Zack-Scan mit Null-Markierung:**")
+        zigzag_colors = []
+        zigzag_vals = []
+        for i, val in enumerate(vec.werte):
+            zigzag_vals.append(str(val))
+            if val == 0:
+                zigzag_colors.append("background-color: #ffcccc")  # rot = Null
+            elif i == 0:
+                zigzag_colors.append("background-color: #ccccff")  # blau = DC
+            else:
+                zigzag_colors.append("background-color: #ccffcc")  # grün = Nicht-Null AC
+        
+        # HTML-Tabelle für farbige Darstellung
+        html_rows = []
+        for row_start in range(0, 64, 8):
+            row_html = "<tr>"
+            for i in range(row_start, min(row_start + 8, 64)):
+                row_html += f'<td style="{zigzag_colors[i]}; text-align:center; padding:8px; border:1px solid #999; font-family:monospace;">{zigzag_vals[i]}</td>'
+            row_html += "</tr>"
+            html_rows.append(row_html)
+        
+        st.markdown(
+            f'<table style="border-collapse:collapse; margin:10px 0;">{"".join(html_rows)}</table>'
+            f'<div><span style="background:#ccccff; padding:2px 8px;">DC (Blau)</span> '
+            f'<span style="background:#ccffcc; padding:2px 8px; margin-left:10px;">AC ≠ 0 (Grün)</span> '
+            f'<span style="background:#ffcccc; padding:2px 8px; margin-left:10px;">AC = 0 (Rot)</span></div>',
+            unsafe_allow_html=True
+        )
+
+        # 2. RLE-Dekodierung als Schritte
+        st.write("**RLE-Dekodierung Schritt-fuer-Schritt:**")
+        
+        rle_steps = []
+        pos = 1  # Nach DC
+        for sym_idx, sym in enumerate(rle.rle_folge.symbols):
+            if hasattr(sym, 'zero_count'):
+                if sym.zero_count == 0 and sym.size_non_zero == 0:
+                    rle_steps.append({
+                        "Schritt": sym_idx + 1,
+                        "Symbol": "EOB",
+                        "Bedeutung": "End of Block",
+                        "Positionen": f"{pos}-63",
+                        "Werte": "Rest mit 0 auffuellen"
+                    })
+                    break
+                else:
+                    next_pos = pos + sym.zero_count + 1
+                    rle_steps.append({
+                        "Schritt": sym_idx + 1,
+                        "Symbol": f"({sym.zero_count}, {sym.size_non_zero})",
+                        "Bedeutung": f"{sym.zero_count} Nullen + 1 Nicht-Null-Wert",
+                        "Positionen": f"{pos}-{next_pos-1}" if sym.zero_count > 0 else str(pos),
+                        "Werte": f"{'0, ' * sym.zero_count}X" if sym.zero_count > 0 else "X"
+                    })
+                    pos = next_pos
+        
+        if rle_steps:
+            st.table(rle_steps)
+        
+        # 3. Grafische Darstellung der Lauflängen
+        st.write("**Grafische Darstellung der RLE-Lauflängen:**")
+        
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(10, 3))
+        
+        current_x = 0
+        colors_map = {'zero': '#ff6b6b', 'value': '#4ecdc4', 'eob': '#ffe66d'}
+        legend_entries = []
+        
+        for sym in rle.rle_folge.symbols:
+            if hasattr(sym, 'zero_count'):
+                if sym.zero_count == 0 and sym.size_non_zero == 0:
+                    # EOB
+                    ax.barh(0, 64 - current_x, left=current_x, color=colors_map['eob'], edgecolor='black', height=0.5)
+                    if 'eob' not in [e[0] for e in legend_entries]:
+                        legend_entries.append(('eob', 'EOB (Rest = 0)'))
+                    break
+                else:
+                    if sym.zero_count > 0:
+                        ax.barh(0, sym.zero_count, left=current_x, color=colors_map['zero'], edgecolor='black', height=0.5)
+                        current_x += sym.zero_count
+                        if 'zero' not in [e[0] for e in legend_entries]:
+                            legend_entries.append(('zero', 'Nullen'))
+                    
+                    ax.barh(0, 1, left=current_x, color=colors_map['value'], edgecolor='black', height=0.5)
+                    current_x += 1
+                    if 'value' not in [e[0] for e in legend_entries]:
+                        legend_entries.append(('value', 'Nicht-Null-Wert'))
+        
+        ax.set_xlim(0, 64)
+        ax.set_xlabel("Position im Zick-Zack-Vektor (0-63)")
+        ax.set_yticks([])
+        ax.set_title("RLE-Kodierung: Null-Laeufen (Rot) und Nicht-Null-Werte (Tuerkis)")
+        
+        # Legende
+        if legend_entries:
+            legend_patches = [plt.Rectangle((0,0),1,1, facecolor=colors_map[k], edgecolor='black') for k, _ in legend_entries]
+            legend_labels = [label for _, label in legend_entries]
+            ax.legend(legend_patches, legend_labels, loc='upper right')
+        
+        st.pyplot(fig)
+        plt.close()
+
         st.markdown("""
         **Erklaerung:**
         - **DPCM**: Der DC-Koeffizient (erster Wert) wird als Differenz zum vorherigen Block kodiert.
