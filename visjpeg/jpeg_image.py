@@ -234,29 +234,35 @@ class JPEGImage:
         self._markered_image = None
 
     def _split_to_rgb(self):
-        self._r_image = Image.new("RGB", (192, 144))
-        self._g_image = Image.new("RGB", (192, 144))
-        self._b_image = Image.new("RGB", (192, 144))
+        r_img = Image.new("RGB", (192, 144))
+        g_img = Image.new("RGB", (192, 144))
+        b_img = Image.new("RGB", (192, 144))
         for x in range(192):
             for y in range(144):
                 r, g, b = self.image.getpixel((x, y))
-                self._r_image.putpixel((x, y), (r, 0, 0))
-                self._g_image.putpixel((x, y), (0, g, 0))
-                self._b_image.putpixel((x, y), (0, 0, b))
+                r_img.putpixel((x, y), (r, 0, 0))
+                g_img.putpixel((x, y), (0, g, 0))
+                b_img.putpixel((x, y), (0, 0, b))
+        self._r_image = r_img
+        self._g_image = g_img
+        self._b_image = b_img
 
     def _split_to_yiq(self):
-        self._y_image = Image.new("L", (192, 144))
-        self._i_image = Image.new("L", (192, 144))
-        self._q_image = Image.new("L", (192, 144))
+        y_img = Image.new("L", (192, 144))
+        i_img = Image.new("L", (192, 144))
+        q_img = Image.new("L", (192, 144))
         for x in range(192):
             for y in range(144):
                 r, g, b = self.image.getpixel((x, y))
                 y_val = int(0.299 * r + 0.587 * g + 0.114 * b)
                 i_val = 128 + int(-0.1687 * r - 0.3313 * g + 0.5 * b)
                 q_val = 128 + int(0.5 * r - 0.4187 * g - 0.0813 * b)
-                self._y_image.putpixel((x, y), y_val)
-                self._i_image.putpixel((x, y), i_val)
-                self._q_image.putpixel((x, y), q_val)
+                y_img.putpixel((x, y), y_val)
+                i_img.putpixel((x, y), i_val)
+                q_img.putpixel((x, y), q_val)
+        self._y_image = y_img
+        self._i_image = i_img
+        self._q_image = q_img
 
     def _mark_block(self, image):
         new_image = image.copy().convert("RGB")
