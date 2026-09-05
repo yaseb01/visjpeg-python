@@ -44,6 +44,10 @@ STANDARD_BILDER = [
     os.path.join(_MODULE_DIR, "schrift.jpg"),
     os.path.join(_MODULE_DIR, "schloss.jpg"),
     os.path.join(_MODULE_DIR, "ayersrock.jpg"),
+    os.path.join(_MODULE_DIR, "sample-boat-400x300.png"),
+    os.path.join(_MODULE_DIR, "sample-hut-400x300.png"),
+    os.path.join(_MODULE_DIR, "sample-bumblebee-400x300.png"),
+    os.path.join(_MODULE_DIR, "sample-clouds2-400x300.png"),
 ]
 
 BILD_NAMEN = [
@@ -51,7 +55,8 @@ BILD_NAMEN = [
     "Raytrace-Bruecke (192x144)", "Triathlon (384x288)",
     "Space Shuttle (512x384)", "Monument Valley (192x144)",
     "Monument Valley 2 (192x144)", "Schrift (192x144)",
-    "Neuschwanstein (512x384)", "Ayers Rock (365x237)"
+    "Neuschwanstein (512x384)", "Ayers Rock (365x237)",
+    "Boot (400x300)", "Hexenhaus (400x300)", "Hummel (400x300)", "Wolken (400x300)"
 ]
 
 
