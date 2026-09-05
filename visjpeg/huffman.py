@@ -84,7 +84,6 @@ class Histogramm:
                     done = True
                 else:
                     v2 = others[v2]
-            others[v2] = v2
 
         bits = [0] * 33
         for i in range(n):

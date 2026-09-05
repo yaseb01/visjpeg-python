@@ -5,7 +5,27 @@ Equivalent to Java Block.java, FloatBlock.java, BlockVektor.java
 
 import math
 from PIL import Image, ImageDraw
+import numpy as np
 from .matrix import Matrix
+
+# Pre-compute DCT coefficient matrix for numpy fast path
+_DCT_COEFF = np.zeros((8, 8), dtype=np.float64)
+for j in range(8):
+    for i in range(8):
+        _DCT_COEFF[i, j] = math.cos((2 * i + 1) * j * math.pi / 16)
+
+_SQ2 = 1 / (2 * math.sqrt(2))
+_SQ2_INV = 1 / math.sqrt(2)
+
+# Build full 8x8 DCT transform matrix
+_DCT_MATRIX = np.zeros((8, 8), dtype=np.float64)
+for u in range(8):
+    cu = _SQ2 if u == 0 else 1.0
+    for x in range(8):
+        _DCT_MATRIX[u, x] = (cu / 2) * math.cos((2 * x + 1) * u * math.pi / 16)
+
+# Inverse DCT matrix
+_IDCT_MATRIX = _DCT_MATRIX.T
 
 
 class BlockVektor:
@@ -135,107 +155,17 @@ class Block(Matrix):
                 self.dct_coeff[i][j] = math.cos((2 * i + 1) * j * math.pi / 16)
 
     def get_dct(self):
-        sq2 = 1 / (2 * math.sqrt(2))
-
-        # process rows
-        for y in range(8):
-            t0 = self.matrix[0][y] - 128
-            t1 = self.matrix[1][y] - 128
-            t2 = self.matrix[2][y] - 128
-            t3 = self.matrix[3][y] - 128
-            t4 = self.matrix[4][y] - 128
-            t5 = self.matrix[5][y] - 128
-            t6 = self.matrix[6][y] - 128
-            t7 = self.matrix[7][y] - 128
-
-            self.blk.matrix[0][y] = sq2 * (t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7)
-            for x in range(1, 8):
-                self.blk.matrix[x][y] = (
-                    t0 * self.dct_coeff[0][x] +
-                    t1 * self.dct_coeff[1][x] +
-                    t2 * self.dct_coeff[2][x] +
-                    t3 * self.dct_coeff[3][x] +
-                    t4 * self.dct_coeff[4][x] +
-                    t5 * self.dct_coeff[5][x] +
-                    t6 * self.dct_coeff[6][x] +
-                    t7 * self.dct_coeff[7][x]
-                ) / 2
-
-        # process columns
-        for x in range(8):
-            t0 = self.blk.matrix[x][0]
-            t1 = self.blk.matrix[x][1]
-            t2 = self.blk.matrix[x][2]
-            t3 = self.blk.matrix[x][3]
-            t4 = self.blk.matrix[x][4]
-            t5 = self.blk.matrix[x][5]
-            t6 = self.blk.matrix[x][6]
-            t7 = self.blk.matrix[x][7]
-
-            self.blk.matrix[x][0] = sq2 * (t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7)
-            for y in range(1, 8):
-                self.blk.matrix[x][y] = (
-                    t0 * self.dct_coeff[0][y] +
-                    t1 * self.dct_coeff[1][y] +
-                    t2 * self.dct_coeff[2][y] +
-                    t3 * self.dct_coeff[3][y] +
-                    t4 * self.dct_coeff[4][y] +
-                    t5 * self.dct_coeff[5][y] +
-                    t6 * self.dct_coeff[6][y] +
-                    t7 * self.dct_coeff[7][y]
-                ) / 2
-
+        # NumPy fast path
+        arr = np.array(self.matrix, dtype=np.float64).T - 128.0
+        result = _DCT_MATRIX @ arr @ _DCT_MATRIX.T
+        self.blk.matrix = result.T.tolist()
         return self.blk
 
     def get_idct(self):
-        sq2 = 1 / math.sqrt(2)
-
-        # process rows
-        for y in range(8):
-            t0 = self.matrix[0][y]
-            t1 = self.matrix[1][y]
-            t2 = self.matrix[2][y]
-            t3 = self.matrix[3][y]
-            t4 = self.matrix[4][y]
-            t5 = self.matrix[5][y]
-            t6 = self.matrix[6][y]
-            t7 = self.matrix[7][y]
-
-            for x in range(8):
-                self.blk.matrix[x][y] = (
-                    t0 * self.dct_coeff[x][0] * sq2 +
-                    t1 * self.dct_coeff[x][1] +
-                    t2 * self.dct_coeff[x][2] +
-                    t3 * self.dct_coeff[x][3] +
-                    t4 * self.dct_coeff[x][4] +
-                    t5 * self.dct_coeff[x][5] +
-                    t6 * self.dct_coeff[x][6] +
-                    t7 * self.dct_coeff[x][7]
-                ) / 2
-
-        # process columns
-        for x in range(8):
-            t0 = self.blk.matrix[x][0]
-            t1 = self.blk.matrix[x][1]
-            t2 = self.blk.matrix[x][2]
-            t3 = self.blk.matrix[x][3]
-            t4 = self.blk.matrix[x][4]
-            t5 = self.blk.matrix[x][5]
-            t6 = self.blk.matrix[x][6]
-            t7 = self.blk.matrix[x][7]
-
-            for y in range(8):
-                self.blk.matrix[x][y] = (
-                    t0 * self.dct_coeff[y][0] * sq2 +
-                    t1 * self.dct_coeff[y][1] +
-                    t2 * self.dct_coeff[y][2] +
-                    t3 * self.dct_coeff[y][3] +
-                    t4 * self.dct_coeff[y][4] +
-                    t5 * self.dct_coeff[y][5] +
-                    t6 * self.dct_coeff[y][6] +
-                    t7 * self.dct_coeff[y][7]
-                ) / 2 + 128
-
+        # NumPy fast path
+        arr = np.array(self.matrix, dtype=np.float64).T
+        result = _IDCT_MATRIX @ arr @ _IDCT_MATRIX.T + 128.0
+        self.blk.matrix = result.T.tolist()
         return self.blk.to_int_block()
 
     def get_zig_zag_scan(self):
