@@ -43,21 +43,22 @@ class Histogramm:
 
     def build_huffman_table(self):
         huff_table = OurHuffmanTable()
+        n = len(self.werte)
         freq = list(self.werte) + [0]
         freq_backup = list(freq)
-        others = [-1] * 257
-        codesize = [0] * 257
+        others = [-1] * (n + 1)
+        codesize = [0] * (n + 1)
 
         while True:
             min_val = 100000
             v1 = 0
-            for i in range(257):
+            for i in range(n + 1):
                 if freq[i] > 0 and freq[i] <= min_val:
                     min_val = freq[i]
                     v1 = i
             v2 = -1
             min_val = 100000
-            for i in range(257):
+            for i in range(n + 1):
                 if freq[i] > 0 and i != v1 and freq[i] < min_val:
                     min_val = freq[i]
                     v2 = i
@@ -86,7 +87,7 @@ class Histogramm:
             others[v2] = v2
 
         bits = [0] * 33
-        for i in range(256):
+        for i in range(n):
             if codesize[i] != 0:
                 bits[codesize[i]] += 1
 
@@ -109,11 +110,11 @@ class Histogramm:
         bits[i] -= 1
 
         freq = list(freq_backup)
-        freq_order = list(range(256))
+        freq_order = list(range(n))
         done = False
         while not done:
             done = True
-            for i in range(255):
+            for i in range(n - 1):
                 if freq[freq_order[i]] < freq[freq_order[i + 1]]:
                     freq_order[i], freq_order[i + 1] = freq_order[i + 1], freq_order[i]
                     done = False
@@ -121,16 +122,18 @@ class Histogramm:
         symb_index = 0
         for i in range(17):
             for j in range(bits[i]):
-                huff_table.lengths[freq_order[symb_index]] = i
-                symb_index += 1
+                if symb_index < n:
+                    huff_table.lengths[freq_order[symb_index]] = i
+                    symb_index += 1
 
         code = 0
         symb_index = 0
         for i in range(17):
             for j in range(bits[i]):
-                huff_table.symbols[freq_order[symb_index]] = code
-                code += 1
-                symb_index += 1
+                if symb_index < n:
+                    huff_table.symbols[freq_order[symb_index]] = code
+                    code += 1
+                    symb_index += 1
             code <<= 1
 
         huff_table.coded_lengths = [0] * 17
@@ -140,8 +143,9 @@ class Histogramm:
         symb_index = 0
         for i in range(17):
             for j in range(bits[i]):
-                huff_table.coded_symbols[symb_index] = freq_order[symb_index]
-                symb_index += 1
+                if symb_index < len(huff_table.coded_symbols):
+                    huff_table.coded_symbols[symb_index] = freq_order[symb_index]
+                    symb_index += 1
 
         return huff_table
 

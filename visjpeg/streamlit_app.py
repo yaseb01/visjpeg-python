@@ -393,14 +393,43 @@ def run_app():
         - Seltene Symbole erhalten laengere Codes
         """)
 
-        st.info("In dieser vereinfachten Version werden die Huffman-Tabellen nicht interaktiv berechnet. "
-                "Die Kernalgorithmen (DCT, Quantisierung, Zick-Zack, RLE) sind jedoch voll funktionsfaehig.")
+        with st.spinner("Berechne Huffman-Statistiken..."):
+            dc_lum, dc_chrom, ac_lum, ac_chrom, total_bits = img.get_huffman_stats(p)
 
+        st.metric("Gesamtanzahl codierte Bits", f"{total_bits:,}")
+
+        st.subheader("Huffman-Tabellen")
+
+        def show_huffman_table(table, title, max_entries=16):
+            st.write(f"**{title}**")
+            entries = []
+            for i in range(len(table.lengths)):
+                if table.lengths[i] != -1:
+                    code_str = bin(table.symbols[i])[2:].zfill(table.lengths[i])
+                    entries.append((i, table.lengths[i], code_str))
+            # Nach Codewortlaenge sortieren
+            entries.sort(key=lambda x: (x[1], x[0]))
+            for idx, length, code in entries[:max_entries]:
+                st.code(f"Symbol {idx:3d}: Laenge {length:2d}, Code {code}", language="text")
+            if len(entries) > max_entries:
+                st.caption(f"... und {len(entries) - max_entries} weitere Symbole")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            show_huffman_table(dc_lum, "DC Luminanz (Y)")
+            show_huffman_table(ac_lum, "AC Luminanz (Y)")
+        with c2:
+            show_huffman_table(dc_chrom, "DC Chrominanz (I/Q)")
+            show_huffman_table(ac_chrom, "AC Chrominanz (I/Q)")
+
+        st.subheader("Erklaerung")
         st.markdown("""
         **JPEG Huffman-Codierung:**
         - Es gibt 4 Tabellen: DC Luminanz, DC Chrominanz, AC Luminanz, AC Chrominanz
-        - Standard-JPEG verwendet vorberechnete Huffman-Tabellen
-        - Die adaptive Variante berechnet Tabellen aus der Haefigkeitsverteilung des aktuellen Bildes
+        - Die Tabellen werden adaptiv aus der Haeufigkeitsverteilung des aktuellen Bildes berechnet
+        - DC-Symbole: Kategorie des Differenzwertes (0-15)
+        - AC-Symbole: (Run, Size) Paare, z.B. (0,3) = 3 Nullen gefolgt von einem Wert mit 3 Bits
+        - EOB (End of Block) wird als spezielles Symbol kodiert
         """)
 
 

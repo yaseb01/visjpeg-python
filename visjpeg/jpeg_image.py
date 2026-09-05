@@ -438,19 +438,128 @@ class JPEGImage:
     def y_blocks(self, resampling_ratio):
         return (self.image.height - 1) // (8 * resampling_ratio) + 1
 
-    # Simplified statistics methods for GUI panels
-    def get_dpcmvli_stats(self):
-        # Returns (diagram_panel, compression_ratio)
-        # Simplified
-        return ({}, 50)
+    def _get_category(self, value):
+        """VLI-Kategorie fuer einen Wert (JPEG-Standard)."""
+        if value == 0:
+            return 0
+        abs_val = abs(value)
+        cat = 0
+        while abs_val > 0:
+            abs_val >>= 1
+            cat += 1
+        return cat
 
-    def get_rle_strings(self):
-        # Returns vector of strings
-        return ["0 0 0 0 0 0 0 0", "(0,0)", "0"]
+    def _build_symbol_histogram(self, parameter):
+        """Erzeugt Histogramme fuer DC- und AC-Symbole des gesamten Bildes."""
+        h = parameter.h_subsample
+        v = parameter.v_subsample
+        x_blocks_y = (self.image.width - 1) // 8 + 1
+        y_blocks_y = (self.image.height - 1) // 8 + 1
+        x_blocks_c = (self.image.width - 1) // (8 * h) + 1
+        y_blocks_c = (self.image.height - 1) // (8 * v) + 1
 
-    def get_huffman_stats(self):
-        # Returns (table_diagram, data_diagram, ratio)
-        return ({}, {}, 30)
+        dc_lum_histo = Histogramm(17)
+        dc_chrom_histo = Histogramm(17)
+        ac_lum_histo = Histogramm(257)
+        ac_chrom_histo = Histogramm(257)
+
+        prev_dc_y = 0
+        prev_dc_i = 0
+        prev_dc_q = 0
+
+        for by in range(y_blocks_y):
+            for bx in range(x_blocks_y):
+                # Y-Block
+                block = self.get_y_block(bx * 8, by * 8)
+                dct = block.get_dct()
+                quant = dct.get_quantisiert(parameter.q_matrix_lum)
+                vec = quant.get_zig_zag_scan()
+                rle = vec.get_rle_compressed()
+
+                dc_diff = rle.dc_value - prev_dc_y
+                prev_dc_y = rle.dc_value
+                dc_cat = self._get_category(dc_diff)
+                dc_lum_histo.werte[dc_cat] += 1
+
+                for sym in rle.rle_folge.symbols:
+                    if hasattr(sym, 'zero_count'):
+                        # RLESymbol1
+                        if sym.zero_count == 0 and sym.size_non_zero == 0:
+                            ac_lum_histo.werte[0] += 1  # EOB
+                        else:
+                            symbol_val = (sym.zero_count << 4) | sym.size_non_zero
+                            ac_lum_histo.werte[symbol_val] += 1
+
+        for by in range(y_blocks_c):
+            for bx in range(x_blocks_c):
+                # I-Block
+                block = self.get_i_block(bx * 8, by * 8, h, v)
+                dct = block.get_dct()
+                quant = dct.get_quantisiert(parameter.q_matrix_chrom)
+                vec = quant.get_zig_zag_scan()
+                rle = vec.get_rle_compressed()
+
+                dc_diff = rle.dc_value - prev_dc_i
+                prev_dc_i = rle.dc_value
+                dc_cat = self._get_category(dc_diff)
+                dc_chrom_histo.werte[dc_cat] += 1
+
+                for sym in rle.rle_folge.symbols:
+                    if hasattr(sym, 'zero_count'):
+                        if sym.zero_count == 0 and sym.size_non_zero == 0:
+                            ac_chrom_histo.werte[0] += 1
+                        else:
+                            symbol_val = (sym.zero_count << 4) | sym.size_non_zero
+                            ac_chrom_histo.werte[symbol_val] += 1
+
+                # Q-Block
+                block = self.get_q_block(bx * 8, by * 8, h, v)
+                dct = block.get_dct()
+                quant = dct.get_quantisiert(parameter.q_matrix_chrom)
+                vec = quant.get_zig_zag_scan()
+                rle = vec.get_rle_compressed()
+
+                dc_diff = rle.dc_value - prev_dc_q
+                prev_dc_q = rle.dc_value
+                dc_cat = self._get_category(dc_diff)
+                dc_chrom_histo.werte[dc_cat] += 1
+
+                for sym in rle.rle_folge.symbols:
+                    if hasattr(sym, 'zero_count'):
+                        if sym.zero_count == 0 and sym.size_non_zero == 0:
+                            ac_chrom_histo.werte[0] += 1
+                        else:
+                            symbol_val = (sym.zero_count << 4) | sym.size_non_zero
+                            ac_chrom_histo.werte[symbol_val] += 1
+
+        return dc_lum_histo, dc_chrom_histo, ac_lum_histo, ac_chrom_histo
+
+    def get_huffman_stats(self, parameter):
+        """Berechnet Huffman-Statistiken fuer das aktuelle Bild.
+        Gibt zurueck: (dc_lum_table, dc_chrom_table, ac_lum_table, ac_chrom_table, total_bits)"""
+        dc_lum_histo, dc_chrom_histo, ac_lum_histo, ac_chrom_histo = self._build_symbol_histogram(parameter)
+
+        dc_lum_table = dc_lum_histo.build_huffman_table()
+        dc_chrom_table = dc_chrom_histo.build_huffman_table()
+        ac_lum_table = ac_lum_histo.build_huffman_table()
+        ac_chrom_table = ac_chrom_histo.build_huffman_table()
+
+        # Gesamtanzahl Bits berechnen
+        total_bits = 0
+        for i in range(17):
+            if dc_lum_table.lengths[i] != -1:
+                total_bits += dc_lum_table.lengths[i] * dc_lum_histo.werte[i]
+        for i in range(17):
+            if dc_chrom_table.lengths[i] != -1:
+                total_bits += dc_chrom_table.lengths[i] * dc_chrom_histo.werte[i]
+        for i in range(257):
+            if ac_lum_table.lengths[i] != -1:
+                total_bits += ac_lum_table.lengths[i] * ac_lum_histo.werte[i]
+        for i in range(257):
+            if ac_chrom_table.lengths[i] != -1:
+                total_bits += ac_chrom_table.lengths[i] * ac_chrom_histo.werte[i]
+
+        return dc_lum_table, dc_chrom_table, ac_lum_table, ac_chrom_table, total_bits
 
     def paint_dpcm_bar(self, width, height, color1, color2, color3):
         img = Image.new("RGB", (width, height), GUIParameter.INACTIVE_BACKGROUND)
