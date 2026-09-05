@@ -1,0 +1,15 @@
+services:
+  visjpeg:
+    build: .
+    container_name: visjpeg
+    environment:
+      - DISPLAY=${DISPLAY:-:99}
+    volumes:
+      # For X11 forwarding on Linux/macOS with XQuartz
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Mount current dir to allow loading custom images
+      - ./:/app/images:ro
+    network_mode: host
+    stdin_open: true
+    tty: true
+    command: python3 run.py
