@@ -120,6 +120,20 @@ def matrix_to_image(matrix, size=256):
     return img.resize((size, size), Image.NEAREST)
 
 
+def subsample_zoom(sub_img, h_sub, v_sub, target_size=(192, 144)):
+    """Vergroessert ein subsampeltes Bild auf Zielgroesse (Nearest-Neighbor)
+    und zeichnet rote Gitterlinien um jeden subsampelten Pixel (= h x v Block)."""
+    zoom = sub_img.convert("L").resize(target_size, Image.NEAREST).convert("RGB")
+    if h_sub > 1 or v_sub > 1:
+        draw = ImageDraw.Draw(zoom)
+        w, ht = target_size
+        for x in range(0, w, h_sub):
+            draw.line([(x, 0), (x, ht - 1)], fill=(255, 0, 0), width=1)
+        for y in range(0, ht, v_sub):
+            draw.line([(0, y), (w - 1, y)], fill=(255, 0, 0), width=1)
+    return zoom
+
+
 def block_navigator(img, state, key_suffix=""):
     """Zeigt das markierte Bild und Pfeil-Buttons zur Block-Navigation."""
     marked = img.get_marked_y_image()
@@ -289,10 +303,29 @@ def run_app():
             st.image(img.get_g_image(), caption="Gruenkanal", width="stretch")
             st.image(img.get_b_image(), caption="Blaukanal", width="stretch")
         with c2:
-            st.image(img.get_y_image(), caption="Y-Kanal (Helligkeit)", width="stretch")
+            st.image(img.get_y_image(), caption="Y-Kanal (Helligkeit), 192x144 px", width="stretch")
         with c3:
-            st.image(img.get_i_image(p.h_subsample, p.v_subsample), caption="Cr-Kanal (Farbabweichung)", width="stretch")
-            st.image(img.get_q_image(p.h_subsample, p.v_subsample), caption="Cb-Kanal (Farbabweichung)", width="stretch")
+            i_img = img.get_i_image(p.h_subsample, p.v_subsample)
+            q_img = img.get_q_image(p.h_subsample, p.v_subsample)
+            st.caption(
+                f"**Subsampling {subsample}:** Cr/Cb haben nur noch "
+                f"**{i_img.width}x{i_img.height} px** statt 192x144 px – jedes Pixel "
+                f"steht fuer einen {p.h_subsample}x{p.v_subsample}-Block."
+            )
+            # Echte (reduzierte) Groesse links, vergroesserter Pixelblock rechts
+            col_true, col_zoom = st.columns(2)
+            with col_true:
+                st.image(i_img, caption=f"Cr-Kanal ({i_img.width}x{i_img.height} px)", width="stretch")
+                st.image(q_img, caption=f"Cb-Kanal ({q_img.width}x{q_img.height} px)", width="stretch")
+            with col_zoom:
+                st.image(
+                    subsample_zoom(i_img, p.h_subsample, p.v_subsample),
+                    caption="Cr vergroessert – rote Kaelten = 1 Pixel", width="stretch"
+                )
+                st.image(
+                    subsample_zoom(q_img, p.h_subsample, p.v_subsample),
+                    caption="Cb vergroessert – rote Kaelten = 1 Pixel", width="stretch"
+                )
 
     # Tab 2: DCT
     with tabs[2]:

@@ -280,7 +280,9 @@ class JPEGImage:
             return image.copy()
         new_width = image.width // h_subsample
         new_height = image.height // v_subsample
-        return image.resize((new_width, new_height), Image.LANCZOS)
+        # BOX = echter Mittelwert ueber jedes h x v Block (JPEG-Subsampling),
+        # kein Weichzeichnen wie bei LANCZOS -> reduzierte Aufloesung bleibt sichtbar
+        return image.resize((new_width, new_height), Image.BOX)
 
     def _supersample(self, image):
         new_width = 192
@@ -465,10 +467,9 @@ class JPEGImage:
         rgb = np.array(self.image)
         r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
 
-        # YIQ-Kanaele als NumPy-Arrays
+        # YIQ-Kanaele als NumPy-Arrays (Y direkt; I/Q uber die gecachten,
+        # subsampelten PIL-Bilder fuer Konsistenz mit der Dekompression)
         y_arr = (0.299 * r + 0.587 * g + 0.114 * b).astype(np.int32)
-        i_arr = (128 - 0.1687 * r - 0.3313 * g + 0.5 * b).astype(np.int32)
-        q_arr = (128 + 0.5 * r - 0.4187 * g - 0.0813 * b).astype(np.int32)
 
         dc_lum_histo = Histogramm(17)
         dc_chrom_histo = Histogramm(17)
@@ -519,9 +520,10 @@ class JPEGImage:
         # Y-Kanal
         process_blocks(y_arr, parameter.q_matrix_lum, dc_lum_histo, ac_lum_histo, [prev_dc_y])
 
-        # I- und Q-Kanaele: subsamplen
-        i_sub = i_arr[::v, ::h] if h > 1 or v > 1 else i_arr
-        q_sub = q_arr[::v, ::h] if h > 1 or v > 1 else q_arr
+        # I- und Q-Kanaele: nutzen die gleichen subsampelten Bilder wie die
+        # Dekompression (BOX-Mittelung), damit alles konsistent ist
+        i_sub = np.array(self.get_i_image(h, v), dtype=np.int32)
+        q_sub = np.array(self.get_q_image(h, v), dtype=np.int32)
 
         process_blocks(i_sub, parameter.q_matrix_chrom, dc_chrom_histo, ac_chrom_histo, [prev_dc_i])
         process_blocks(q_sub, parameter.q_matrix_chrom, dc_chrom_histo, ac_chrom_histo, [prev_dc_q])
