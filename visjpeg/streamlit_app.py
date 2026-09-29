@@ -9,9 +9,12 @@ import sys
 import io
 import base64
 import math
+import tempfile
+import hashlib
 from PIL import Image, ImageDraw
 import streamlit as st
 import numpy as np
+import plotly.graph_objects as go
 
 # Fix for streamlit direct execution: ensure visjpeg package is importable
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -59,6 +62,16 @@ BILD_NAMEN = [
     "Boot (400x300)", "Hexenhaus (400x300)", "Hummel (400x300)", "Wolken (400x300)"
 ]
 
+SCHRITT_NAMEN = [
+    "Uebersicht",
+    "1. Farbraum",
+    "2. DCT",
+    "3. Quantisierung",
+    "4. Zick-Zack",
+    "5. DPCM + RLE",
+    "6. Entropie"
+]
+
 
 def get_state():
     if "parameter" not in st.session_state:
@@ -67,6 +80,8 @@ def get_state():
         st.session_state.marker_x = 0
         st.session_state.marker_y = 0
         st.session_state.differenzbild = False
+        st.session_state.uploaded_file_id = None
+        st.session_state.current_step = 0
     return st.session_state
 
 
@@ -109,79 +124,128 @@ def show_image_pair(left_img, right_img, left_caption="", right_caption=""):
 
 
 def matrix_to_image(matrix, size=256):
-    """Wandelt eine 8x8 int-Matrix in ein Graustufen-PIL Image um."""
+    """Wandelt eine 8x8 int-Matrix in ein Graustufen-PIL Image um.
+    Absolute Skala: Grauwert = Matrixwert (0=schwarz, 255=weiß)."""
     img = Image.new("L", (8, 8))
-    max_val = max(max(abs(matrix[x][y]) for y in range(8)) for x in range(8))
-    max_val = max(max_val, 1)
     for y in range(8):
         for x in range(8):
-            val = int((abs(matrix[x][y]) / max_val) * 255)
+            val = max(0, min(255, int(matrix[x][y])))
             img.putpixel((x, y), val)
     return img.resize((size, size), Image.NEAREST)
 
 
-def subsample_zoom(sub_img, h_sub, v_sub, target_size=(192, 144)):
-    """Vergroessert ein subsampeltes Bild auf Zielgroesse (Nearest-Neighbor)
-    und zeichnet rote Gitterlinien um jeden subsampelten Pixel (= h x v Block)."""
-    zoom = sub_img.convert("L").resize(target_size, Image.NEAREST).convert("RGB")
-    if h_sub > 1 or v_sub > 1:
-        draw = ImageDraw.Draw(zoom)
-        w, ht = target_size
-        for x in range(0, w, h_sub):
-            draw.line([(x, 0), (x, ht - 1)], fill=(255, 0, 0), width=1)
-        for y in range(0, ht, v_sub):
-            draw.line([(0, y), (w - 1, y)], fill=(255, 0, 0), width=1)
-    return zoom
+def subsample_reconstruct(sub_img, h_sub, v_sub, target_size=(192, 144)):
+    """Vergroessert ein subsampeltes Bild auf Zielgroesse (Nearest-Neighbor).
+    Zeigt das echte Untertastungs-Ergebnis ohne Gitter-Linien."""
+    return sub_img.convert("L").resize(target_size, Image.NEAREST).convert("RGB")
 
 
-def block_navigator(img, state, key_suffix=""):
-    """Zeigt das markierte Bild und Pfeil-Buttons zur Block-Navigation."""
-    marked = img.get_marked_y_image()
+def subsample_pattern(sub_img, h_sub, v_sub, target_size=(192, 144)):
+    """Zeigt nur die Abtastpositionen: beibehaltene Positionen mit Mittelwert-Grauwert,
+    alle entfallenen Positionen weiss."""
+    w, ht = target_size
+    canvas = np.full((ht, w), 255, dtype=np.uint8)
+    sub_arr = np.array(sub_img, dtype=np.uint8)
+    canvas[::v_sub, ::h_sub] = sub_arr
+    return Image.fromarray(canvas, mode="L").convert("RGB")
 
-    # Bild in der Mitte
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        st.image(marked, caption=f"Y-Komponente – Block ({state.marker_x}, {state.marker_y})", width="stretch")
 
-    # Steuerkreuz (D-Pad) darunter
-    st.markdown("**Block auswaehlen:**")
+def block_navigator_plotly(img, state):
+    """Zeigt das Y-Bild mit Plotly-Klickauswahl + D-Pad."""
+    y_arr = np.array(img.get_y_image())
+    h, w = y_arr.shape
 
+    # Block-Rechteck-Koordinaten
+    bx, by = state.marker_x, state.marker_y
+    rect_x = [bx, bx+8, bx+8, bx, bx]
+    rect_y = [by, by, by+8, by+8, by]
+
+    fig = go.Figure()
+
+    # Y-Bild als Heatmap
+    fig.add_trace(go.Heatmap(
+        z=y_arr,
+        colorscale="Gray",
+        showscale=False,
+        hovertemplate="Pixel (%{x}, %{y})<br>Wert: %{z}<extra></extra>"
+    ))
+
+    # Block-Rechteck
+    fig.add_trace(go.Scatter(
+        x=rect_x, y=rect_y,
+        mode="lines",
+        line=dict(color="yellow", width=3),
+        hoverinfo="skip",
+        showlegend=False
+    ))
+
+    fig.update_layout(
+        width=400, height=320,
+        margin=dict(l=0, r=0, t=30, b=0),
+        yaxis=dict(scaleanchor="x", scaleratio=1, range=[h, 0]),
+        xaxis=dict(range=[0, w]),
+        title=f"Block ({bx}, {by})",
+    )
+
+    event = st.plotly_chart(fig, on_select="rerun", key="block_select")
+
+    # Klick-Verarbeitung
+    if event and hasattr(event, 'selection') and event.selection:
+        points = event.selection.get("points", [])
+        if points:
+            px = points[0].get("x", None)
+            py = points[0].get("y", None)
+            if px is not None and py is not None:
+                new_bx = (int(px) // 8) * 8
+                new_by = (int(py) // 8) * 8
+                new_bx = max(0, min(w - 8, new_bx))
+                new_by = max(0, min(h - 8, new_by))
+                if new_bx != state.marker_x or new_by != state.marker_y:
+                    state.marker_x = new_bx
+                    state.marker_y = new_by
+                    state.our_image.set_marker(new_bx, new_by)
+                    st.rerun()
+
+    # D-Pad als Fallback
     def move(dx, dy):
-        new_x = max(0, min(184, state.marker_x + dx))
-        new_y = max(0, min(136, state.marker_y + dy))
+        new_x = max(0, min(w - 8, state.marker_x + dx))
+        new_y = max(0, min(h - 8, state.marker_y + dy))
         if new_x != state.marker_x or new_y != state.marker_y:
             state.marker_x = new_x
             state.marker_y = new_y
-            state.our_image.set_marker(state.marker_x, state.marker_y)
+            state.our_image.set_marker(new_x, new_y)
             st.rerun()
 
-    # Zeile 1: leer, ▲, leer
-    r1 = st.columns([1, 1, 1])
-    with r1[1]:
-        if st.button("▲", key=f"up_{key_suffix}", use_container_width=True):
+    cols = st.columns([1, 1, 1, 1, 1])
+    with cols[1]:
+        if st.button("▲", key="nav_up", use_container_width=True):
             move(0, -8)
-
-    # Zeile 2: ◄, Mitte, ►
-    r2 = st.columns([1, 1, 1])
-    with r2[0]:
-        if st.button("◄", key=f"left_{key_suffix}", use_container_width=True):
+    with cols[0]:
+        if st.button("◄", key="nav_left", use_container_width=True):
             move(-8, 0)
-    with r2[1]:
+    with cols[2]:
+        if st.button("►", key="nav_right", use_container_width=True):
+            move(8, 0)
+    with cols[3]:
+        if st.button("▼", key="nav_down", use_container_width=True):
+            move(0, 8)
+    with cols[4]:
         st.markdown(
-            f"<div style='text-align:center; padding-top:6px; font-family:monospace; font-size:14px;'>"
-            f"x={state.marker_x}<br>y={state.marker_y}"
-            f"</div>",
+            f"<div style='text-align:center; font-family:monospace; font-size:13px; padding-top:8px;'>"
+            f"x={state.marker_x}, y={state.marker_y}</div>",
             unsafe_allow_html=True
         )
-    with r2[2]:
-        if st.button("►", key=f"right_{key_suffix}", use_container_width=True):
-            move(8, 0)
 
-    # Zeile 3: leer, ▼, leer
-    r3 = st.columns([1, 1, 1])
-    with r3[1]:
-        if st.button("▼", key=f"down_{key_suffix}", use_container_width=True):
-            move(0, 8)
+
+def _get_subsample_label(h, v):
+    if h == 1 and v == 1:
+        return "4:4:4 (kein Subsampling)"
+    elif h == 2 and v == 1:
+        return "4:2:2"
+    elif h == 2 and v == 2:
+        return "4:2:0"
+    else:
+        return "4:1:1"
 
 
 def run_app():
@@ -211,10 +275,14 @@ def run_app():
         # Eigenes Bild hochladen
         uploaded = st.file_uploader("Eigenes Bild", type=["jpg", "jpeg", "png", "gif", "bmp"])
         if uploaded is not None:
-            img = Image.open(uploaded).convert("RGB")
-            tmp_path = "/tmp/visjpeg_upload.png"
-            img.save(tmp_path)
-            init_image(tmp_path)
+            file_bytes = uploaded.getvalue()
+            file_id = hashlib.md5(file_bytes).hexdigest()
+            if file_id != state.uploaded_file_id:
+                img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+                tmp_path = os.path.join(tempfile.gettempdir(), "visjpeg_upload.png")
+                img.save(tmp_path)
+                state.uploaded_file_id = file_id
+                init_image(tmp_path)
 
         # Subsampling
         st.subheader("Subsampling")
@@ -230,7 +298,7 @@ def run_app():
             state.parameter.v_subsample = 2
         else:
             state.parameter.h_subsample = 4
-            state.parameter.v_subsample = 2
+            state.parameter.v_subsample = 1
         if state.our_image:
             state.our_image.invalidate()
 
@@ -246,11 +314,6 @@ def run_app():
             if state.our_image:
                 state.our_image.invalidate()
 
-        # Blockauswahl-Info (keine Slider mehr)
-        st.subheader("8x8 Block-Auswahl")
-        st.info(f"Aktueller Block: ({state.marker_x}, {state.marker_y})")
-        st.markdown("Verwende die Pfeile im DCT-Tab, um den Block zu verschieben.")
-
         # Ansicht
         st.subheader("Ansicht")
         state.differenzbild = st.checkbox("Differenzbild", value=state.differenzbild)
@@ -259,22 +322,41 @@ def run_app():
         st.info("Bitte waehle ein Bild in der Seitenleiste aus.")
         return
 
-    # Hauptbereich: Tabs
-    tabs = st.tabs([
-        "Uebersicht",
-        "1. Farbraum",
-        "2. DCT",
-        "3. Quantisierung",
-        "4. Zick-Zack",
-        "5. DPCM + RLE",
-        "6. Entropie"
-    ])
-
     img = state.our_image
     p = state.parameter
 
-    # Tab 0: Uebersicht
-    with tabs[0]:
+    # Block-Navigator: Plotly-Klickauswahl (immer sichtbar)
+    block_navigator_plotly(img, state)
+
+    # Schritt-Navigation: Radio + Weiter/Zurueck
+    st.markdown("---")
+
+    nav_cols = st.columns([1, 6, 1])
+    with nav_cols[0]:
+        if st.button("← Zurueck", use_container_width=True, disabled=(state.current_step == 0)):
+            state.current_step -= 1
+            st.rerun()
+    with nav_cols[2]:
+        if st.button("Weiter →", use_container_width=True, disabled=(state.current_step == len(SCHRITT_NAMEN) - 1)):
+            state.current_step += 1
+            st.rerun()
+
+    schritt = st.radio(
+        "Schritt",
+        SCHRITT_NAMEN,
+        index=state.current_step,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    state.current_step = SCHRITT_NAMEN.index(schritt)
+
+    st.markdown("---")
+
+    # Schritt-Inhalt
+    step = state.current_step
+
+    if step == 0:
+        # Uebersicht
         st.header("Original vs. Komprimiert")
         orig = img.get_image()
         if state.differenzbild:
@@ -283,56 +365,110 @@ def run_app():
             comp = img.get_decompressed_jpeg_image(p)
         show_image_pair(orig, comp, "Originalbild", "JPEG-komprimiert" if not state.differenzbild else "Differenzbild")
 
-        # PSNR anzeigen
+        # Metriken
         psnr = img.get_psnr(p)
         if psnr == float('inf'):
             psnr_text = "∞ (verlustfrei)"
         else:
             psnr_text = f"{psnr:.2f} dB"
-        st.metric("PSNR (Peak Signal-to-Noise Ratio)", psnr_text,
-                  help="Hoehere PSNR = bessere Qualitaet. Typisch: >40 dB = sehr gut, 30-40 dB = gut, <30 dB = sichtbare Artefakte.")
 
-    # Tab 1: Farbraum
-    with tabs[1]:
+        with st.spinner("Berechne Kompressionsstatistiken..."):
+            _, _, _, _, total_bits = img.get_huffman_stats(p)
+
+        original_bits = 192 * 144 * 3 * 8
+        compression_ratio = original_bits / total_bits if total_bits > 0 else 0
+        bpp = total_bits / (192 * 144)
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("PSNR", psnr_text,
+                      help="Hoehere PSNR = bessere Qualitaet. Typisch: >40 dB = sehr gut, 30-40 dB = gut, <30 dB = sichtbare Artefakte.")
+        with m2:
+            st.metric("Kompressionsrate", f"{compression_ratio:.1f}:1",
+                      help="Originalgroesse / Komprimierte Groesse. Hoehere Zahl = staerker komprimiert.")
+        with m3:
+            st.metric("Bits pro Pixel", f"{bpp:.2f} bpp",
+                      help="Benötigte Bits pro Pixel. Unkomprimiert: 24 bpp. JPEG typisch: 0.5–3 bpp.")
+
+    elif step == 1:
+        # Farbraum
         st.header("Schritt 1: Farbraumkonvertierung")
-        st.markdown("Konvertierung von RGB nach YIQ (bzw. YCrCb) mit optionalem Subsampling der Chrominanz-Kanaele.")
+        st.markdown("Konvertierung von RGB nach YCrCb mit optionalem Subsampling der Chrominanz-Kanaele.")
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
+        # Zeile 1: RGB
+        cr, cg, cb = st.columns(3)
+        with cr:
             st.image(img.get_r_image(), caption="Rotkanal", width="stretch")
+        with cg:
             st.image(img.get_g_image(), caption="Gruenkanal", width="stretch")
+        with cb:
             st.image(img.get_b_image(), caption="Blaukanal", width="stretch")
-        with c2:
-            st.image(img.get_y_image(), caption="Y-Kanal (Helligkeit), 192x144 px", width="stretch")
-        with c3:
-            i_img = img.get_i_image(p.h_subsample, p.v_subsample)
-            q_img = img.get_q_image(p.h_subsample, p.v_subsample)
-            st.caption(
-                f"**Subsampling {subsample}:** Cr/Cb haben nur noch "
-                f"**{i_img.width}x{i_img.height} px** statt 192x144 px – jedes Pixel "
-                f"steht fuer einen {p.h_subsample}x{p.v_subsample}-Block."
+
+        st.markdown("---")
+
+        # Zeile 2: Y, Cr, Cb nebeneinander – gleiche Anzeigegröße
+        i_img = img.get_i_image(p.h_subsample, p.v_subsample)
+        q_img = img.get_q_image(p.h_subsample, p.v_subsample)
+
+        anteil = round((1 - 1 / (p.h_subsample * p.v_subsample)) * 100)
+        st.subheader("YCrCb-Kanaele & Subsampling")
+        st.caption(
+            f"**Subsampling {subsample}:** Aus jedem **{p.h_subsample}×{p.v_subsample}-Block** wird "
+            f"1 Abtastwert (Mittelwert) – **{anteil}% der Chroma-Pixel entfallen**. "
+            f"Cr/Cb: **{i_img.width}×{i_img.height} px** statt 192×144 px. "
+            f"Unten rekonstruiert auf Y-Größe (Nearest-Neighbor)."
+        )
+
+        cy, ci, cq = st.columns(3)
+        with cy:
+            st.image(img.get_y_image(), caption="Y-Kanal (Helligkeit), 192×144 px", width="stretch")
+        with ci:
+            st.image(
+                subsample_reconstruct(i_img, p.h_subsample, p.v_subsample),
+                caption=f"Cr-Kanal rekonstruiert ({i_img.width}×{i_img.height} → 192×144)",
+                width="stretch"
             )
-            # Echte (reduzierte) Groesse links, vergroesserter Pixelblock rechts
-            col_true, col_zoom = st.columns(2)
-            with col_true:
-                st.image(i_img, caption=f"Cr-Kanal ({i_img.width}x{i_img.height} px)", width="stretch")
-                st.image(q_img, caption=f"Cb-Kanal ({q_img.width}x{q_img.height} px)", width="stretch")
-            with col_zoom:
+        with cq:
+            st.image(
+                subsample_reconstruct(q_img, p.h_subsample, p.v_subsample),
+                caption=f"Cb-Kanal rekonstruiert ({q_img.width}×{q_img.height} → 192×144)",
+                width="stretch"
+            )
+
+        # Zeile 3: Abtast-Positionen (nur bei aktivem Subsampling)
+        if p.h_subsample > 1 or p.v_subsample > 1:
+            st.subheader("Abtast-Positionen – weiße Pixel entfallen")
+            st.caption(
+                f"Nur die eingetragenen Positionen werden abgetastet "
+                f"(jeweils der Mittelwert des {p.h_subsample}×{p.v_subsample}-Blocks); "
+                f"alle weißen Pixel entfallen und werden nicht gespeichert."
+            )
+            cp1, cp2 = st.columns(2)
+            with cp1:
                 st.image(
-                    subsample_zoom(i_img, p.h_subsample, p.v_subsample),
-                    caption="Cr vergroessert – rote Kaelten = 1 Pixel", width="stretch"
+                    subsample_pattern(i_img, p.h_subsample, p.v_subsample),
+                    caption=f"Cr: Abtast-Positionen ({i_img.width}×{i_img.height} → 192×144)",
+                    width="stretch"
                 )
+            with cp2:
                 st.image(
-                    subsample_zoom(q_img, p.h_subsample, p.v_subsample),
-                    caption="Cb vergroessert – rote Kaelten = 1 Pixel", width="stretch"
+                    subsample_pattern(q_img, p.h_subsample, p.v_subsample),
+                    caption=f"Cb: Abtast-Positionen ({q_img.width}×{q_img.height} → 192×144)",
+                    width="stretch"
                 )
 
-    # Tab 2: DCT
-    with tabs[2]:
+        # Echte Auflösung im Expander
+        if p.h_subsample > 1 or p.v_subsample > 1:
+            with st.expander("Echte (reduzierte) Auflösung von Cr/Cb anzeigen"):
+                col_i, col_q = st.columns(2)
+                with col_i:
+                    st.image(i_img, caption=f"Cr-Kanal original ({i_img.width}×{i_img.height} px)", width="stretch")
+                with col_q:
+                    st.image(q_img, caption=f"Cb-Kanal original ({q_img.width}×{q_img.height} px)", width="stretch")
+
+    elif step == 2:
+        # DCT
         st.header("Schritt 2: Diskrete Cosinus-Transformation (DCT)")
-
-        # Block-Navigator mit Bild + Pfeilen
-        block_navigator(img, state, key_suffix="dct")
 
         block = img.get_marked_block()
         dct_block = block.get_dct()
@@ -345,18 +481,21 @@ def run_app():
             show_matrix([[round(v, 1) for v in row] for row in dct_block.matrix], "DCT-transformierte Werte")
             st.image(dct_block.paint_bar3d(300, 200, (0, 0, 255)), caption="3D-Visualisierung DCT", width="stretch")
 
-    # Tab 3: Quantisierung
-    with tabs[3]:
+    elif step == 3:
+        # Quantisierung
         st.header("Schritt 3: Quantisierung")
         block = img.get_marked_block()
         dct = block.get_dct()
         quant = dct.get_quantisiert(p.q_matrix_lum)
         dequant = quant.get_dequantisiert(p.q_matrix_lum)
+        reconstructed = dequant.get_idct()
 
         c1, c2, c3 = st.columns(3)
         with c1:
             show_matrix(p.q_matrix_lum.matrix, "Quantisierungsmatrix")
-            st.image(matrix_to_image(p.q_matrix_lum.matrix), caption="Quantisierungsmatrix (Visual)", width="stretch")
+            st.image(matrix_to_image(p.q_matrix_lum.matrix),
+                     caption="Quantisierungsmatrix – Helligkeit = Schrittweite (schwarz=fein, weiß=grob)",
+                     width="stretch")
         with c2:
             show_matrix(quant.matrix, "Quantisierte Werte")
             st.image(quant.paint_bar3d(300, 200, (0, 128, 0)), caption="3D-Visualisierung quantisiert", width="stretch")
@@ -364,8 +503,31 @@ def run_app():
             show_matrix([[round(v) for v in row] for row in dequant.matrix], "Dequantisierte Werte")
             st.image(dequant.paint_bar3d(300, 200, (0, 128, 0)), caption="3D-Visualisierung dequantisiert", width="stretch")
 
-    # Tab 4: Zick-Zack
-    with tabs[4]:
+        # Blockvergleich: Original vs. Rekonstruiert
+        st.subheader("Blockvergleich: Original vs. Rekonstruiert")
+
+        def _block_to_zoomed_img(block_matrix, size=128):
+            arr = np.array(block_matrix, dtype=np.int32).T
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+            img = Image.fromarray(arr, mode="L")
+            return img.resize((size, size), Image.NEAREST)
+
+        col_orig, col_recon, col_diff = st.columns(3)
+        with col_orig:
+            st.image(_block_to_zoomed_img(block.matrix), caption="Original-Block (8x8 → 128x128)", width="stretch")
+        with col_recon:
+            st.image(_block_to_zoomed_img(reconstructed.matrix), caption="Rekonstruierter Block", width="stretch")
+        with col_diff:
+            diff_arr = np.abs(np.array(block.matrix, dtype=np.int32) - np.array(reconstructed.matrix, dtype=np.int32)).T
+            diff_arr = np.clip(diff_arr * 4, 0, 255).astype(np.uint8)
+            diff_img = Image.fromarray(diff_arr, mode="L").resize((128, 128), Image.NEAREST)
+            st.image(diff_img, caption="Differenz (verstaerkt 4x)", width="stretch")
+
+        max_diff = max(abs(block.matrix[x][y] - reconstructed.matrix[x][y]) for x in range(8) for y in range(8))
+        st.info(f"Maximaler Pixel-Fehler: {max_diff} (bei Qualitaet {p.q_faktor})")
+
+    elif step == 4:
+        # Zick-Zack
         st.header("Schritt 4: Zick-Zack-Scan")
         block = img.get_marked_block()
         dct = block.get_dct()
@@ -382,8 +544,8 @@ def run_app():
         Dadurch entstehen lange Nullfolgen am Ende, die sich gut mit RLE komprimieren lassen.
         """)
 
-    # Tab 5: DPCM + RLE
-    with tabs[5]:
+    elif step == 5:
+        # DPCM + RLE
         st.header("Schritt 5: DPCM- und RLE-Kodierung")
         block = img.get_marked_block()
         dct = block.get_dct()
@@ -410,23 +572,22 @@ def run_app():
                         symbols_text.append(f"({sym.zero_count} Nullen, Groesse {sym.size_non_zero})")
             st.code("\n".join(symbols_text), language="text")
 
-        # NEU: RLE Visualisierung
+        # RLE Visualisierung
         st.subheader("RLE-Kodierung Visualisierung")
         
-        # 1. Zig-Zag Vektor als farbige Tabelle
+        # Zig-Zag Vektor als farbige Tabelle
         st.write("**Zick-Zack-Scan mit Null-Markierung:**")
         zigzag_colors = []
         zigzag_vals = []
         for i, val in enumerate(vec.werte):
             zigzag_vals.append(str(val))
             if val == 0:
-                zigzag_colors.append("background-color: #ffcccc")  # rot = Null
+                zigzag_colors.append("background-color: #ffcccc")
             elif i == 0:
-                zigzag_colors.append("background-color: #ccccff")  # blau = DC
+                zigzag_colors.append("background-color: #ccccff")
             else:
-                zigzag_colors.append("background-color: #ccffcc")  # grün = Nicht-Null AC
+                zigzag_colors.append("background-color: #ccffcc")
         
-        # HTML-Tabelle für farbige Darstellung
         html_rows = []
         for row_start in range(0, 64, 8):
             row_html = "<tr>"
@@ -438,16 +599,16 @@ def run_app():
         st.markdown(
             f'<table style="border-collapse:collapse; margin:10px 0;">{"".join(html_rows)}</table>'
             f'<div><span style="background:#ccccff; padding:2px 8px;">DC (Blau)</span> '
-            f'<span style="background:#ccffcc; padding:2px 8px; margin-left:10px;">AC ≠ 0 (Grün)</span> '
+            f'<span style="background:#ccffcc; padding:2px 8px; margin-left:10px;">AC ≠ 0 (Gruen)</span> '
             f'<span style="background:#ffcccc; padding:2px 8px; margin-left:10px;">AC = 0 (Rot)</span></div>',
             unsafe_allow_html=True
         )
 
-        # 2. RLE-Dekodierung als Schritte
+        # RLE-Dekodierung als Schritte
         st.write("**RLE-Dekodierung Schritt-fuer-Schritt:**")
         
         rle_steps = []
-        pos = 1  # Nach DC
+        pos = 1
         for sym_idx, sym in enumerate(rle.rle_folge.symbols):
             if hasattr(sym, 'zero_count'):
                 if sym.zero_count == 0 and sym.size_non_zero == 0:
@@ -473,8 +634,8 @@ def run_app():
         if rle_steps:
             st.table(rle_steps)
         
-        # 3. Grafische Darstellung der Lauflängen
-        st.write("**Grafische Darstellung der RLE-Lauflängen:**")
+        # Grafische Darstellung der Lauflaengen
+        st.write("**Grafische Darstellung der RLE-Lauflaengen:**")
         
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(10, 3))
@@ -486,7 +647,6 @@ def run_app():
         for sym in rle.rle_folge.symbols:
             if hasattr(sym, 'zero_count'):
                 if sym.zero_count == 0 and sym.size_non_zero == 0:
-                    # EOB
                     ax.barh(0, 64 - current_x, left=current_x, color=colors_map['eob'], edgecolor='black', height=0.5)
                     if 'eob' not in [e[0] for e in legend_entries]:
                         legend_entries.append(('eob', 'EOB (Rest = 0)'))
@@ -508,7 +668,6 @@ def run_app():
         ax.set_yticks([])
         ax.set_title("RLE-Kodierung: Null-Laeufen (Rot) und Nicht-Null-Werte (Tuerkis)")
         
-        # Legende
         if legend_entries:
             legend_patches = [plt.Rectangle((0,0),1,1, facecolor=colors_map[k], edgecolor='black') for k, _ in legend_entries]
             legend_labels = [label for _, label in legend_entries]
@@ -524,8 +683,8 @@ def run_app():
         - **VLI**: Die Nicht-Null-Werte werden mit variabler Laenge kodiert.
         """)
 
-    # Tab 6: Entropie
-    with tabs[6]:
+    elif step == 6:
+        # Entropie
         st.header("Schritt 6: Entropie-Kodierung (Huffman)")
         st.markdown("""
         Die Entropie-Kodierung ordnet den Symbolen variable Bitlaengen nach ihrer Haeufigkeit zu:
@@ -536,31 +695,85 @@ def run_app():
         with st.spinner("Berechne Huffman-Statistiken..."):
             dc_lum, dc_chrom, ac_lum, ac_chrom, total_bits = img.get_huffman_stats(p)
 
-        st.metric("Gesamtanzahl codierte Bits", f"{total_bits:,}")
+        original_bits = 192 * 144 * 3 * 8
+        compression_ratio = original_bits / total_bits if total_bits > 0 else 0
+        bpp = total_bits / (192 * 144)
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Huffman-codierte Bits", f"{total_bits:,}")
+        with m2:
+            st.metric("Kompressionsrate", f"{compression_ratio:.1f}:1")
+        with m3:
+            st.metric("Bits pro Pixel", f"{bpp:.2f} bpp")
 
         st.subheader("Huffman-Tabellen")
 
-        def show_huffman_table(table, title, max_entries=16):
-            st.write(f"**{title}**")
+        def _huffman_table_to_df(table, title):
             entries = []
             for i in range(len(table.lengths)):
                 if table.lengths[i] != -1:
                     code_str = bin(table.symbols[i])[2:].zfill(table.lengths[i])
-                    entries.append((i, table.lengths[i], code_str))
-            # Nach Codewortlaenge sortieren
-            entries.sort(key=lambda x: (x[1], x[0]))
-            for idx, length, code in entries[:max_entries]:
-                st.code(f"Symbol {idx:3d}: Laenge {length:2d}, Code {code}", language="text")
-            if len(entries) > max_entries:
-                st.caption(f"... und {len(entries) - max_entries} weitere Symbole")
+                    entries.append({"Symbol": i, "Laenge": table.lengths[i], "Code": code_str})
+            entries.sort(key=lambda x: (x["Laenge"], x["Symbol"]))
+            return entries
 
-        c1, c2 = st.columns(2)
-        with c1:
-            show_huffman_table(dc_lum, "DC Luminanz (Y)")
-            show_huffman_table(ac_lum, "AC Luminanz (Y)")
-        with c2:
-            show_huffman_table(dc_chrom, "DC Chrominanz (I/Q)")
-            show_huffman_table(ac_chrom, "AC Chrominanz (I/Q)")
+        col_dc, col_ac = st.columns(2)
+        with col_dc:
+            st.write("**DC Luminanz (Y)**")
+            dc_lum_entries = _huffman_table_to_df(dc_lum, "DC Luminanz")
+            if dc_lum_entries:
+                st.dataframe(dc_lum_entries, use_container_width=True, hide_index=True)
+            st.write("**DC Chrominanz (I/Q)**")
+            dc_chrom_entries = _huffman_table_to_df(dc_chrom, "DC Chrominanz")
+            if dc_chrom_entries:
+                st.dataframe(dc_chrom_entries, use_container_width=True, hide_index=True)
+        with col_ac:
+            st.write("**AC Luminanz (Y)**")
+            ac_lum_entries = _huffman_table_to_df(ac_lum, "AC Luminanz")
+            if ac_lum_entries:
+                st.dataframe(ac_lum_entries[:20], use_container_width=True, hide_index=True)
+                if len(ac_lum_entries) > 20:
+                    st.caption(f"... und {len(ac_lum_entries) - 20} weitere")
+            st.write("**AC Chrominanz (I/Q)**")
+            ac_chrom_entries = _huffman_table_to_df(ac_chrom, "AC Chrominanz")
+            if ac_chrom_entries:
+                st.dataframe(ac_chrom_entries[:20], use_container_width=True, hide_index=True)
+                if len(ac_chrom_entries) > 20:
+                    st.caption(f"... und {len(ac_chrom_entries) - 20} weitere")
+
+        st.subheader("Bitlaengen-Verteilung")
+        st.markdown("Verteilung der Codewort-Laengen: kuerzere Codes fuer haeufigere Symbole.")
+
+        dc_lum_histo = dc_lum.get_histogramm()
+        ac_lum_histo = ac_lum.get_histogramm()
+        dc_chrom_histo = dc_chrom.get_histogramm()
+        ac_chrom_histo = ac_chrom.get_histogramm()
+
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(2, 2, figsize=(12, 6))
+
+        for ax, histo, title in [
+            (axes[0, 0], dc_lum_histo, "DC Luminanz"),
+            (axes[0, 1], dc_chrom_histo, "DC Chrominanz"),
+            (axes[1, 0], ac_lum_histo, "AC Luminanz"),
+            (axes[1, 1], ac_chrom_histo, "AC Chrominanz"),
+        ]:
+            lengths = list(range(len(histo.werte)))
+            counts = histo.werte
+            nonzero = [(l, c) for l, c in zip(lengths, counts) if c > 0]
+            if nonzero:
+                ls, cs = zip(*nonzero)
+                ax.bar(ls, cs, color="steelblue", edgecolor="black")
+                ax.set_xlabel("Bit-Laenge")
+                ax.set_ylabel("Anzahl Symbole")
+                ax.set_title(title)
+            else:
+                ax.text(0.5, 0.5, "Keine Daten", ha="center", va="center", transform=ax.transAxes)
+
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close()
 
         st.subheader("Erklaerung")
         st.markdown("""
@@ -571,22 +784,6 @@ def run_app():
         - AC-Symbole: (Run, Size) Paare, z.B. (0,3) = 3 Nullen gefolgt von einem Wert mit 3 Bits
         - EOB (End of Block) wird als spezielles Symbol kodiert
         """)
-
-
-def main():
-    import sys
-    import subprocess
-    app_path = os.path.join(os.path.dirname(__file__), "streamlit_app.py")
-    cmd = [
-        sys.executable, "-m", "streamlit", "run",
-        app_path,
-        "--server.headless", "true",
-        "--server.port", "8501",
-        "--browser.gatherUsageStats", "false"
-    ]
-    print("Starte VisJPEG Streamlit-App...")
-    print("Oeffne deinen Browser unter: http://localhost:8501")
-    subprocess.run(cmd)
 
 
 if __name__ == "__main__":

@@ -90,26 +90,6 @@ class JPEGImage:
         # Simplified - same as file for now
         self._load_from_file(url)
 
-    def set_image_shift(self, x_shift, y_shift):
-        new_x_shift = self.parameter.x_shift - x_shift if hasattr(self, 'parameter') else -x_shift
-        new_y_shift = self.parameter.y_shift - self.parameter.y_shift if hasattr(self, 'parameter') else -y_shift
-        roh_width = self.roh_image.width
-        roh_height = self.roh_image.height
-
-        if new_x_shift > roh_width - 192:
-            new_x_shift = roh_width - 192
-        if new_y_shift > roh_height - 144:
-            new_y_shift = roh_height - 144
-        if new_x_shift < 0:
-            new_x_shift = 0
-        if new_y_shift < 0:
-            new_y_shift = 0
-
-        if hasattr(self, 'parameter'):
-            self.parameter.x_shift = new_x_shift
-            self.parameter.y_shift = new_y_shift
-        self._rebuild_from_raw(True, new_x_shift, new_y_shift)
-
     def get_roh_width(self):
         return self.roh_image.width
 
@@ -239,35 +219,26 @@ class JPEGImage:
         self._markered_image = None
 
     def _split_to_rgb(self):
-        r_img = Image.new("RGB", (192, 144))
-        g_img = Image.new("RGB", (192, 144))
-        b_img = Image.new("RGB", (192, 144))
-        for x in range(192):
-            for y in range(144):
-                r, g, b = self.image.getpixel((x, y))
-                r_img.putpixel((x, y), (r, 0, 0))
-                g_img.putpixel((x, y), (0, g, 0))
-                b_img.putpixel((x, y), (0, 0, b))
-        self._r_image = r_img
-        self._g_image = g_img
-        self._b_image = b_img
+        arr = np.array(self.image)
+        r_arr = np.zeros_like(arr)
+        r_arr[:, :, 0] = arr[:, :, 0]
+        g_arr = np.zeros_like(arr)
+        g_arr[:, :, 1] = arr[:, :, 1]
+        b_arr = np.zeros_like(arr)
+        b_arr[:, :, 2] = arr[:, :, 2]
+        self._r_image = Image.fromarray(r_arr)
+        self._g_image = Image.fromarray(g_arr)
+        self._b_image = Image.fromarray(b_arr)
 
     def _split_to_yiq(self):
-        y_img = Image.new("L", (192, 144))
-        i_img = Image.new("L", (192, 144))
-        q_img = Image.new("L", (192, 144))
-        for x in range(192):
-            for y in range(144):
-                r, g, b = self.image.getpixel((x, y))
-                y_val = int(0.299 * r + 0.587 * g + 0.114 * b)
-                i_val = 128 + int(-0.1687 * r - 0.3313 * g + 0.5 * b)
-                q_val = 128 + int(0.5 * r - 0.4187 * g - 0.0813 * b)
-                y_img.putpixel((x, y), y_val)
-                i_img.putpixel((x, y), i_val)
-                q_img.putpixel((x, y), q_val)
-        self._y_image = y_img
-        self._i_image = i_img
-        self._q_image = q_img
+        arr = np.array(self.image, dtype=np.float64)
+        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+        y_arr = (0.299 * r + 0.587 * g + 0.114 * b).astype(np.int32)
+        i_arr = (128 + (-0.1687 * r - 0.3313 * g + 0.5 * b)).astype(np.int32)
+        q_arr = (128 + (0.5 * r - 0.4187 * g - 0.0813 * b)).astype(np.int32)
+        self._y_image = Image.fromarray(y_arr.clip(0, 255).astype(np.uint8), mode="L")
+        self._i_image = Image.fromarray(i_arr.clip(0, 255).astype(np.uint8), mode="L")
+        self._q_image = Image.fromarray(q_arr.clip(0, 255).astype(np.uint8), mode="L")
 
     def _mark_block(self, image):
         new_image = image.copy().convert("RGB")
@@ -309,35 +280,35 @@ class JPEGImage:
 
     def _get_block(self, image, block_x, block_y):
         block = Block()
+        arr = np.array(image)
+        h, w = arr.shape[:2]
         for x in range(8):
             for y in range(8):
                 px = block_x + x
                 py = block_y + y
-                if px < image.width and py < image.height:
-                    val = image.getpixel((px, py))
-                    if isinstance(val, tuple):
+                if px < w and py < h:
+                    val = arr[py, px]
+                    if isinstance(val, np.ndarray):
                         val = val[0]
-                    block.matrix[x][y] = val
+                    block.matrix[x][y] = int(val)
                 else:
                     block.matrix[x][y] = 0
         return block
 
     def _process_channel(self, channel_img, q_matrix, width, height):
         """Wendet DCT, Quantisierung und iDCT auf einen Kanal an."""
-        result = Image.new("L", (width, height))
+        arr = np.array(channel_img, dtype=np.int32)
+        result = np.zeros((height, width), dtype=np.int32)
         for by in range(0, height, 8):
             for bx in range(0, width, 8):
-                # Block extrahieren
+                # Block extrahieren via numpy slicing
                 block = Block()
                 for x in range(8):
                     for y in range(8):
                         px = bx + x
                         py = by + y
-                        if px < channel_img.width and py < channel_img.height:
-                            val = channel_img.getpixel((px, py))
-                            if isinstance(val, tuple):
-                                val = val[0]
-                            block.matrix[x][y] = val
+                        if px < arr.shape[1] and py < arr.shape[0]:
+                            block.matrix[x][y] = int(arr[py, px])
                         else:
                             block.matrix[x][y] = 0
 
@@ -347,16 +318,14 @@ class JPEGImage:
                 dequant = quant.get_dequantisiert(q_matrix)
                 reconstructed = dequant.get_idct()
 
-                # Zurueckschreiben
+                # Zurueckschreiben via numpy slicing
                 for x in range(8):
                     for y in range(8):
                         px = bx + x
                         py = by + y
                         if px < width and py < height:
-                            val = int(reconstructed.matrix[x][y])
-                            val = max(0, min(255, val))
-                            result.putpixel((px, py), val)
-        return result
+                            result[py, px] = np.clip(int(reconstructed.matrix[x][y]), 0, 255)
+        return Image.fromarray(result.astype(np.uint8), mode="L")
 
     def get_decompressed_jpeg_image(self, parameter):
         if self.jpeg_image_parameter is not None and self.jpeg_image_parameter == parameter and self._decompr_rgb_image is not None:
@@ -378,56 +347,36 @@ class JPEGImage:
         i_processed = i_processed.resize((192, 144), Image.NEAREST)
         q_processed = q_processed.resize((192, 144), Image.NEAREST)
 
-        # YIQ -> RGB
-        result = Image.new("RGB", (192, 144))
-        for x in range(192):
-            for y in range(144):
-                y_val = y_processed.getpixel((x, y))
-                i_val = i_processed.getpixel((x, y)) - 128
-                q_val = q_processed.getpixel((x, y)) - 128
+        # YIQ -> RGB (numpy vectorized)
+        y_arr = np.array(y_processed, dtype=np.float64)
+        i_arr = np.array(i_processed, dtype=np.float64) - 128.0
+        q_arr = np.array(q_processed, dtype=np.float64) - 128.0
 
-                red = int(y_val + 1.402 * q_val)
-                green = int(y_val - 0.34414 * i_val - 0.71414 * q_val)
-                blue = int(y_val + 1.772 * i_val)
+        red = np.clip(y_arr + 1.402 * q_arr, 0, 255).astype(np.uint8)
+        green = np.clip(y_arr - 0.34414 * i_arr - 0.71414 * q_arr, 0, 255).astype(np.uint8)
+        blue = np.clip(y_arr + 1.772 * i_arr, 0, 255).astype(np.uint8)
 
-                red = max(0, min(255, red))
-                green = max(0, min(255, green))
-                blue = max(0, min(255, blue))
-
-                result.putpixel((x, y), (red, green, blue))
-
-        self._decompr_rgb_image = result
-        return result
+        result = np.stack([red, green, blue], axis=-1)
+        self._decompr_rgb_image = Image.fromarray(result)
+        return self._decompr_rgb_image
 
     def get_difference_image(self, parameter):
         if self.difference_image_parameter is not None and self.difference_image_parameter == parameter and self._diff_image is not None:
             return self._diff_image
 
-        orig = self.image
-        comp = self.get_decompressed_jpeg_image(parameter)
-        diff = Image.new("RGB", (192, 144))
-        for x in range(192):
-            for y in range(144):
-                r1, g1, b1 = orig.getpixel((x, y))
-                r2, g2, b2 = comp.getpixel((x, y))
-                diff.putpixel((x, y), (abs(r1 - r2) * 4, abs(g1 - g2) * 4, abs(b1 - b2) * 4))
+        orig = np.array(self.image, dtype=np.int32)
+        comp = np.array(self.get_decompressed_jpeg_image(parameter), dtype=np.int32)
+        diff_arr = np.clip(np.abs(orig - comp) * 4, 0, 255).astype(np.uint8)
 
         self.difference_image_parameter = parameter.clone() if hasattr(parameter, 'clone') else parameter
-        self._diff_image = diff
-        return diff
+        self._diff_image = Image.fromarray(diff_arr)
+        return self._diff_image
 
     def get_psnr(self, parameter):
         """Berechnet die PSNR (Peak Signal-to-Noise Ratio) zwischen Original und komprimiertem Bild."""
-        import math
-        orig = self.image
-        comp = self.get_decompressed_jpeg_image(parameter)
-        mse = 0.0
-        for x in range(192):
-            for y in range(144):
-                r1, g1, b1 = orig.getpixel((x, y))
-                r2, g2, b2 = comp.getpixel((x, y))
-                mse += (r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2
-        mse /= (192 * 144 * 3)
+        orig = np.array(self.image, dtype=np.float64)
+        comp = np.array(self.get_decompressed_jpeg_image(parameter), dtype=np.float64)
+        mse = np.mean((orig - comp) ** 2)
         if mse == 0:
             return float('inf')
         return 20 * math.log10(255.0 / math.sqrt(mse))
@@ -563,12 +512,3 @@ class JPEGImage:
         self._huffman_stats_params = parameter.clone() if hasattr(parameter, 'clone') else parameter
         return result
 
-    def paint_dpcm_bar(self, width, height, color1, color2, color3):
-        img = Image.new("RGB", (width, height), GUIParameter.INACTIVE_BACKGROUND)
-        draw = ImageDraw.Draw(img)
-        return img
-
-    def paint_huffman_sizes(self, width, height, c1, c2, c3, c4):
-        img = Image.new("RGB", (width, height), GUIParameter.INACTIVE_BACKGROUND)
-        draw = ImageDraw.Draw(img)
-        return img
