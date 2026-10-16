@@ -42,7 +42,32 @@ Dann starten mit:
 visjpeg
 ```
 
-### Variante B: Ohne Installation (direkt aus dem Ordner)
+### Variante B: Mit virtueller Umgebung (venv)
+
+Sauberste Variante, wenn man nichts am systemweiten Python veraendern moechte
+(z. B. im Hoersaal-, Pool- oder Heimarbeitsplatz):
+
+```bash
+git clone <repo-url>
+cd visjpeg_python
+
+# 1. Virtuelle Umgebung anlegen (einmalig)
+python3 -m venv .venv           # Windows: py -m venv .venv
+
+# 2. Aktivieren (in jedem neuen Terminal)
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+
+# 3. Installieren und starten
+pip install -e .
+visjpeg
+```
+
+Hinweise:
+- Vor jedem Start nur noch Schritt 2 (Aktivieren) noetig, danach `visjpeg`.
+- Beenden der Umgebung: `deactivate`.
+- Zum Aufraeumen einfach den Ordner `.venv` loeschen.
+
+### Variante C: Ohne Installation (direkt aus dem Ordner)
 
 ```bash
 cd visjpeg_python
@@ -50,7 +75,7 @@ pip install -r requirements.txt
 python -m visjpeg
 ```
 
-### Variante C: Mit Docker
+### Variante D: Mit Docker
 
 ```bash
 cd visjpeg_python
