@@ -28,6 +28,18 @@ for u in range(8):
 _IDCT_MATRIX = _DCT_MATRIX.T
 
 
+def _vli_category(value):
+    """VLI-Kategorie (Bitlaenge des Betrags) eines JPEG-Koeffizienten."""
+    if value == 0:
+        return 0
+    cat = 0
+    abs_val = abs(value)
+    while abs_val > 0:
+        abs_val >>= 1
+        cat += 1
+    return cat
+
+
 class BlockVektor:
     def __init__(self, werte=None):
         if werte is None:
@@ -65,7 +77,7 @@ class BlockVektor:
 
                 symb = RLESymbol1()
                 symb.zero_count = num_zeros
-                symb.size_non_zero = 1
+                symb.size_non_zero = _vli_category(self.werte[i])
                 folge.add_element(symb)
                 num_symbol1 += 1
 

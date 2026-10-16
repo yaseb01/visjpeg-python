@@ -1,5 +1,9 @@
 """
-Golden tests – sichern die aktuelle Pipeline-Numerik vor der Performance-Refaktur.
+Golden tests – sichern die aktuelle Pipeline-Numerik.
+
+Regeneriert am 16.10.2026 (bewusste Entscheidung, siehe AGENTS.md): Die AC-RLE-
+Kodierung verwendet jetzt die echte VLI-Kategorie statt hardcodierter Groesse 1,
+wodurch sich die Huffman-Gesamtbitzahl geaendert hat. PSNR-Werte sind unveraendert.
 """
 
 import os
@@ -118,9 +122,9 @@ class TestGoldenImagePipeline:
     """Golden values captured before numpy refactoring."""
 
     @pytest.mark.parametrize("img_name,expected_psnr,expected_bits", [
-        ("test2.gif", 27.4549, 12816),
-        ("tria.jpg", 23.3169, 19628),
-        ("monument.jpg", 33.2536, 10697),
+        ("test2.gif", 27.4549, 21393),
+        ("tria.jpg", 23.3169, 33591),
+        ("monument.jpg", 33.2536, 16267),
     ])
     def test_psnr_and_bits(self, img_name, expected_psnr, expected_bits):
         path = os.path.join(TESTDATA_DIR, img_name)

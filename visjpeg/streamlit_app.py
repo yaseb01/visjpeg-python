@@ -81,7 +81,6 @@ def get_state():
         st.session_state.marker_y = 0
         st.session_state.differenzbild = False
         st.session_state.uploaded_file_id = None
-        st.session_state.current_step = 0
     return st.session_state
 
 
@@ -218,16 +217,16 @@ def block_navigator_plotly(img, state):
 
     cols = st.columns([1, 1, 1, 1, 1])
     with cols[1]:
-        if st.button("▲", key="nav_up", use_container_width=True):
+        if st.button("▲", key="nav_up", width="stretch"):
             move(0, -8)
     with cols[0]:
-        if st.button("◄", key="nav_left", use_container_width=True):
+        if st.button("◄", key="nav_left", width="stretch"):
             move(-8, 0)
     with cols[2]:
-        if st.button("►", key="nav_right", use_container_width=True):
+        if st.button("►", key="nav_right", width="stretch"):
             move(8, 0)
     with cols[3]:
-        if st.button("▼", key="nav_down", use_container_width=True):
+        if st.button("▼", key="nav_down", width="stretch"):
             move(0, 8)
     with cols[4]:
         st.markdown(
@@ -264,7 +263,34 @@ def run_app():
         idx = BILD_NAMEN.index(auswahl)
         path = STANDARD_BILDER[idx]
 
-        if state.our_image is None or state.parameter.filename != path:
+        # Wechsel der Standardbild-Auswahl verwirft einen laufenden Upload
+        auswahl_geaendert = state.get("last_auswahl") != auswahl
+        if auswahl_geaendert:
+            state.last_auswahl = auswahl
+
+        # Eigenes Bild hochladen
+        uploaded = st.file_uploader("Eigenes Bild", type=["jpg", "jpeg", "png", "gif", "bmp"])
+        zeige_standard = True
+        if uploaded is not None:
+            file_bytes = uploaded.getvalue()
+            file_id = hashlib.md5(file_bytes).hexdigest()
+            if auswahl_geaendert and state.get("uploaded_file_id") == file_id:
+                # Nutzer hat explizit ein Standardbild gewaehlt -> Upload verwerfen
+                state.uploaded_file_id = None
+                state.dismissed_upload_id = file_id
+            if file_id != state.get("dismissed_upload_id") and file_id != state.uploaded_file_id:
+                img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+                tmp_path = os.path.join(tempfile.gettempdir(), "visjpeg_upload.png")
+                img.save(tmp_path)
+                state.uploaded_file_id = file_id
+                init_image(tmp_path)
+                zeige_standard = False
+            elif state.uploaded_file_id == file_id:
+                # Aktiver Upload bleibt bestehen (Bugfix: wurde vorher bei jedem
+                # Rerun durch die Standardbild-Auswahl ueberschrieben)
+                zeige_standard = False
+
+        if zeige_standard and (state.our_image is None or state.parameter.filename != path):
             real_path = get_image_or_placeholder(path)
             if real_path:
                 init_image(real_path)
@@ -272,35 +298,24 @@ def run_app():
                 st.warning(f"Bild nicht gefunden: {path}")
                 return
 
-        # Eigenes Bild hochladen
-        uploaded = st.file_uploader("Eigenes Bild", type=["jpg", "jpeg", "png", "gif", "bmp"])
-        if uploaded is not None:
-            file_bytes = uploaded.getvalue()
-            file_id = hashlib.md5(file_bytes).hexdigest()
-            if file_id != state.uploaded_file_id:
-                img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-                tmp_path = os.path.join(tempfile.gettempdir(), "visjpeg_upload.png")
-                img.save(tmp_path)
-                state.uploaded_file_id = file_id
-                init_image(tmp_path)
-
         # Subsampling
         st.subheader("Subsampling")
         subsample = st.selectbox("Cr/Cb Subsampling", ["4:4:4 (kein Subsampling)", "4:2:2", "4:2:0", "4:1:1"], index=2)
         if subsample == "4:4:4 (kein Subsampling)":
-            state.parameter.h_subsample = 1
-            state.parameter.v_subsample = 1
+            neu_h, neu_v = 1, 1
         elif subsample == "4:2:2":
-            state.parameter.h_subsample = 2
-            state.parameter.v_subsample = 1
+            neu_h, neu_v = 2, 1
         elif subsample == "4:2:0":
-            state.parameter.h_subsample = 2
-            state.parameter.v_subsample = 2
+            neu_h, neu_v = 2, 2
         else:
-            state.parameter.h_subsample = 4
-            state.parameter.v_subsample = 1
-        if state.our_image:
-            state.our_image.invalidate()
+            neu_h, neu_v = 4, 1
+        # Nur bei tatsaechlicher Aenderung invalidieren (Bugfix: vorher lief
+        # invalidate() bei jedem Rerun und wischte alle Caches weg)
+        if (neu_h, neu_v) != (state.parameter.h_subsample, state.parameter.v_subsample):
+            state.parameter.h_subsample = neu_h
+            state.parameter.v_subsample = neu_v
+            if state.our_image:
+                state.our_image.invalidate()
 
         # Qualitaetsfaktor
         st.subheader("Qualitaet")
@@ -328,32 +343,41 @@ def run_app():
     # Block-Navigator: Plotly-Klickauswahl (immer sichtbar)
     block_navigator_plotly(img, state)
 
-    # Schritt-Navigation: Radio + Weiter/Zurueck
+    # Schritt-Navigation: Radio + Weiter/Zurueck.
+    # Das Radio verwaltet seinen Zustand selbst ueber einen stabilen key;
+    # die Buttons schreiben denselben Session-State. Wichtig: KEIN index=
+    # uebergeben! Bei einem keyless-Radio fliesst index in die Widget-ID ein
+    # – bei jedem Schrittwechsel haette das Radio eine neue Identitaet, und
+    # Klicks muessen im Browser teils doppelt erfolgen, bis Frontend- und
+    # Backend-Zustand wieder uebereinstimmen.
     st.markdown("---")
+
+    if "schritt_nav" not in st.session_state:
+        st.session_state.schritt_nav = SCHRITT_NAMEN[0]
+    aktueller_index = SCHRITT_NAMEN.index(st.session_state.schritt_nav)
 
     nav_cols = st.columns([1, 6, 1])
     with nav_cols[0]:
-        if st.button("← Zurueck", use_container_width=True, disabled=(state.current_step == 0)):
-            state.current_step -= 1
+        if st.button("← Zurueck", width="stretch", disabled=(aktueller_index == 0)):
+            st.session_state.schritt_nav = SCHRITT_NAMEN[aktueller_index - 1]
             st.rerun()
     with nav_cols[2]:
-        if st.button("Weiter →", use_container_width=True, disabled=(state.current_step == len(SCHRITT_NAMEN) - 1)):
-            state.current_step += 1
+        if st.button("Weiter →", width="stretch", disabled=(aktueller_index == len(SCHRITT_NAMEN) - 1)):
+            st.session_state.schritt_nav = SCHRITT_NAMEN[aktueller_index + 1]
             st.rerun()
 
     schritt = st.radio(
         "Schritt",
         SCHRITT_NAMEN,
-        index=state.current_step,
         horizontal=True,
-        label_visibility="collapsed"
+        label_visibility="collapsed",
+        key="schritt_nav",
     )
-    state.current_step = SCHRITT_NAMEN.index(schritt)
 
     st.markdown("---")
 
     # Schritt-Inhalt
-    step = state.current_step
+    step = SCHRITT_NAMEN.index(schritt)
 
     if step == 0:
         # Uebersicht
@@ -425,13 +449,13 @@ def run_app():
         with ci:
             st.image(
                 subsample_reconstruct(i_img, p.h_subsample, p.v_subsample),
-                caption=f"Cr-Kanal rekonstruiert ({i_img.width}×{i_img.height} → 192×144)",
+                caption=f"Cb-Kanal rekonstruiert ({i_img.width}×{i_img.height} → 192×144)",
                 width="stretch"
             )
         with cq:
             st.image(
                 subsample_reconstruct(q_img, p.h_subsample, p.v_subsample),
-                caption=f"Cb-Kanal rekonstruiert ({q_img.width}×{q_img.height} → 192×144)",
+                caption=f"Cr-Kanal rekonstruiert ({q_img.width}×{q_img.height} → 192×144)",
                 width="stretch"
             )
 
@@ -447,13 +471,13 @@ def run_app():
             with cp1:
                 st.image(
                     subsample_pattern(i_img, p.h_subsample, p.v_subsample),
-                    caption=f"Cr: Abtast-Positionen ({i_img.width}×{i_img.height} → 192×144)",
+                    caption=f"Cb: Abtast-Positionen ({i_img.width}×{i_img.height} → 192×144)",
                     width="stretch"
                 )
             with cp2:
                 st.image(
                     subsample_pattern(q_img, p.h_subsample, p.v_subsample),
-                    caption=f"Cb: Abtast-Positionen ({q_img.width}×{q_img.height} → 192×144)",
+                    caption=f"Cr: Abtast-Positionen ({q_img.width}×{q_img.height} → 192×144)",
                     width="stretch"
                 )
 
@@ -462,9 +486,9 @@ def run_app():
             with st.expander("Echte (reduzierte) Auflösung von Cr/Cb anzeigen"):
                 col_i, col_q = st.columns(2)
                 with col_i:
-                    st.image(i_img, caption=f"Cr-Kanal original ({i_img.width}×{i_img.height} px)", width="stretch")
+                    st.image(i_img, caption=f"Cb-Kanal original ({i_img.width}×{i_img.height} px)", width="stretch")
                 with col_q:
-                    st.image(q_img, caption=f"Cb-Kanal original ({q_img.width}×{q_img.height} px)", width="stretch")
+                    st.image(q_img, caption=f"Cr-Kanal original ({q_img.width}×{q_img.height} px)", width="stretch")
 
     elif step == 2:
         # DCT
@@ -723,22 +747,22 @@ def run_app():
             st.write("**DC Luminanz (Y)**")
             dc_lum_entries = _huffman_table_to_df(dc_lum, "DC Luminanz")
             if dc_lum_entries:
-                st.dataframe(dc_lum_entries, use_container_width=True, hide_index=True)
+                st.dataframe(dc_lum_entries, width="stretch", hide_index=True)
             st.write("**DC Chrominanz (I/Q)**")
             dc_chrom_entries = _huffman_table_to_df(dc_chrom, "DC Chrominanz")
             if dc_chrom_entries:
-                st.dataframe(dc_chrom_entries, use_container_width=True, hide_index=True)
+                st.dataframe(dc_chrom_entries, width="stretch", hide_index=True)
         with col_ac:
             st.write("**AC Luminanz (Y)**")
             ac_lum_entries = _huffman_table_to_df(ac_lum, "AC Luminanz")
             if ac_lum_entries:
-                st.dataframe(ac_lum_entries[:20], use_container_width=True, hide_index=True)
+                st.dataframe(ac_lum_entries[:20], width="stretch", hide_index=True)
                 if len(ac_lum_entries) > 20:
                     st.caption(f"... und {len(ac_lum_entries) - 20} weitere")
             st.write("**AC Chrominanz (I/Q)**")
             ac_chrom_entries = _huffman_table_to_df(ac_chrom, "AC Chrominanz")
             if ac_chrom_entries:
-                st.dataframe(ac_chrom_entries[:20], use_container_width=True, hide_index=True)
+                st.dataframe(ac_chrom_entries[:20], width="stretch", hide_index=True)
                 if len(ac_chrom_entries) > 20:
                     st.caption(f"... und {len(ac_chrom_entries) - 20} weitere")
 

@@ -20,6 +20,8 @@ class OurHuffmanTable:
             pass
 
     def __eq__(self, other):
+        if not isinstance(other, OurHuffmanTable):
+            return False
         for i in range(len(self.lengths)):
             if self.lengths[i] != other.lengths[i]:
                 return False
@@ -93,7 +95,10 @@ class Histogramm:
         i = 32
         while True:
             if bits[i] > 0:
-                j = i - 1
+                # do-while aus dem JPEG-Standard (Fig. K.1): j startet bei i-2.
+                # Waere hier bits[i-1] > 0, wuerde eine while-Schleife mit Start
+                # bei i-1 eine no-op-Endlosschleife erzeugen.
+                j = i - 2
                 while bits[j] == 0:
                     j -= 1
                 bits[i] -= 2
@@ -104,9 +109,10 @@ class Histogramm:
                 i -= 1
                 if i == 16:
                     break
-        while bits[i] == 0:
+        while i > 0 and bits[i] == 0:
             i -= 1
-        bits[i] -= 1
+        if i > 0:
+            bits[i] -= 1
 
         freq = list(freq_backup)
         freq_order = list(range(n))
@@ -255,7 +261,10 @@ class HuffmanWriter:
             self.current_val -= output << self.current_size
 
     def flush(self):
-        self.write_byte(self.current_val << (8 - self.current_size))
+        # Nur auffuellen, wenn unvollstaendige Bits uebrig sind – sonst
+        # wuerde ein unnoetiges 0x00-Byte geschrieben.
+        if self.current_size > 0:
+            self.write_byte(self.current_val << (8 - self.current_size))
         self.current_val = 0
         self.current_size = 0
 
