@@ -124,12 +124,13 @@ def show_image_pair(left_img, right_img, left_caption="", right_caption=""):
 
 def matrix_to_image(matrix, size=256):
     """Wandelt eine 8x8 int-Matrix in ein Graustufen-PIL Image um.
-    Absolute Skala: Grauwert = Matrixwert (0=schwarz, 255=weiß)."""
+    Invertierte Skala: kleine Matrixwerte (feine Schrittweite) -> weiss,
+    grosse Matrixwerte (grobe Schrittweite) -> schwarz."""
     img = Image.new("L", (8, 8))
     for y in range(8):
         for x in range(8):
             val = max(0, min(255, int(matrix[x][y])))
-            img.putpixel((x, y), val)
+            img.putpixel((x, y), 255 - val)
     return img.resize((size, size), Image.NEAREST)
 
 
@@ -518,7 +519,7 @@ def run_app():
         with c1:
             show_matrix(p.q_matrix_lum.matrix, "Quantisierungsmatrix")
             st.image(matrix_to_image(p.q_matrix_lum.matrix),
-                     caption="Quantisierungsmatrix – Helligkeit = Schrittweite (schwarz=fein, weiß=grob)",
+                     caption="Quantisierungsmatrix – Helligkeit = Schrittweite (weiß=fein, schwarz=grob)",
                      width="stretch")
         with c2:
             show_matrix(quant.matrix, "Quantisierte Werte")
